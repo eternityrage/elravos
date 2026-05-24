@@ -1,6 +1,6 @@
 """
-Instagram Reels Upload - Using catbox.moe for Public URL
-Uploads video to catbox.moe, then uses URL for Instagram API
+Instagram Reels Upload - Using temp hosting services for Public URL
+Uploads video via fallback chain of free hosts, then uses URL for Instagram API
 """
 
 import os
@@ -13,22 +13,94 @@ env_path = Path(__file__).parent.parent / '.env'
 load_dotenv(dotenv_path=env_path, override=True)
 
 
-def upload_to_catbox(file_path):
-    """Upload a file to catbox.moe and return the direct URL."""
-    url = "https://catbox.moe/user/api.php"
+def upload_to_0x0(file_path):
+    """Upload a file to 0x0.st and return the direct URL."""
     with open(file_path, 'rb') as f:
         resp = requests.post(
-            url,
+            'https://0x0.st',
+            files={'file': ('video.mp4', f, 'video/mp4')},
+            timeout=300
+        )
+    if resp.status_code != 200:
+        raise Exception(f"0x0.st upload failed: {resp.status_code} {resp.text[:200]}")
+    url = resp.text.strip()
+    if not url.startswith('https://'):
+        raise Exception(f"0x0.st returned invalid URL: {url}")
+    return url
+
+
+def upload_to_tempfile(file_path):
+    """Upload a file to tmpfiles.org and return the direct download URL."""
+    with open(file_path, 'rb') as f:
+        resp = requests.post(
+            'https://tmpfiles.org/api/v1/upload',
+            files={'file': ('video.mp4', f, 'video/mp4')},
+            timeout=300
+        )
+    if resp.status_code != 200:
+        raise Exception(f"tmpfiles.org upload failed: {resp.status_code}")
+    data = resp.json()
+    if data.get('status') != 'success':
+        raise Exception(f"tmpfiles.org upload failed: {data}")
+    temp_url = data.get('data', {}).get('url', '')
+    return temp_url.replace('tmpfiles.org/', 'tmpfiles.org/dl/')
+
+
+def upload_to_catbox(file_path):
+    """Upload a file to catbox.moe and return the direct URL."""
+    with open(file_path, 'rb') as f:
+        resp = requests.post(
+            'https://catbox.moe/user/api.php',
             data={'reqtype': 'fileupload'},
             files={'fileToUpload': ('video.mp4', f, 'video/mp4')},
             timeout=300
         )
     if resp.status_code != 200:
-        raise Exception(f"catbox.moe upload failed: {resp.status_code} {resp.text}")
-    direct_url = resp.text.strip()
-    if not direct_url.startswith('https://'):
-        raise Exception(f"catbox.moe returned invalid URL: {direct_url}")
-    return direct_url
+        raise Exception(f"catbox.moe upload failed: {resp.status_code} {resp.text[:200]}")
+    url = resp.text.strip()
+    if not url.startswith('https://'):
+        raise Exception(f"catbox.moe returned invalid URL: {url}")
+    return url
+
+
+def upload_to_uguu(file_path):
+    """Upload a file to uguu.se and return the direct URL."""
+    with open(file_path, 'rb') as f:
+        resp = requests.post(
+            'https://uguu.se/upload',
+            files={'files[]': ('video.mp4', f, 'video/mp4')},
+            timeout=300
+        )
+    if resp.status_code != 200:
+        raise Exception(f"uguu.se upload failed: {resp.status_code} {resp.text[:200]}")
+    data = resp.json()
+    if not data.get('success'):
+        raise Exception(f"uguu.se upload failed: {data}")
+    return data['files'][0]['url']
+
+
+HOSTING_SERVICES = [
+    ("0x0.st", upload_to_0x0),
+    ("tmpfiles.org", upload_to_tempfile),
+    ("catbox.moe", upload_to_catbox),
+    ("uguu.se", upload_to_uguu),
+]
+
+
+def upload_to_temporary_host(file_path):
+    """Try each hosting service in order until one works."""
+    last_error = None
+    for name, upload_func in HOSTING_SERVICES:
+        try:
+            print(f"[instagram] Trying {name}...")
+            url = upload_func(file_path)
+            print(f"[instagram] Uploaded via {name}: {url}")
+            return url
+        except Exception as e:
+            print(f"[instagram] {name} failed: {e}")
+            last_error = e
+            continue
+    raise Exception(f"All hosting services failed. Last error: {last_error}")
 
 
 def upload_to_instagram(video_path, caption, is_story=False):
@@ -91,8 +163,8 @@ def upload_to_instagram(video_path, caption, is_story=False):
     print(f"[instagram] Caption length: {len(caption_limited)} characters")
 
     try:
-        print("[instagram] Step 1: Uploading to catbox.moe for temporary hosting...")
-        video_url = upload_to_catbox(video_path)
+        print("[instagram] Step 1: Uploading to temporary hosting...")
+        video_url = upload_to_temporary_host(video_path)
         print(f"[instagram] Temporary URL created: {video_url}")
 
         print(f"[instagram] Step 2: Creating Instagram {media_type} container...")
