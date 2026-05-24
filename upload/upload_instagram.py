@@ -4,7 +4,9 @@ Uploads video via fallback chain of free hosts, then uses URL for Instagram API
 """
 
 import os
+import subprocess
 import requests
+import tempfile
 import time
 from pathlib import Path
 from dotenv import load_dotenv
@@ -12,8 +14,58 @@ from dotenv import load_dotenv
 env_path = Path(__file__).parent.parent / '.env'
 load_dotenv(dotenv_path=env_path, override=True)
 
+TEMP_COMPRESS_DIR = Path(tempfile.gettempdir()) / "ig_compress"
+TEMP_COMPRESS_DIR.mkdir(parents=True, exist_ok=True)
 
 REQ_TIMEOUT = (15, 120)
+
+
+def compress_for_instagram(video_path):
+    """Compress video to ~30-40MB for faster Instagram processing."""
+    input_path = Path(video_path)
+    output_path = TEMP_COMPRESS_DIR / f"compressed_{input_path.stem}.mp4"
+
+    original_size_mb = input_path.stat().st_size / (1024 * 1024)
+    print(f"[instagram] Original size: {original_size_mb:.1f} MB")
+
+    if original_size_mb < 40:
+        print(f"[instagram] Under 40MB, skipping compression")
+        return str(video_path)
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", str(input_path),
+        "-c:v", "libx264",
+        "-crf", "28",
+        "-preset", "fast",
+        "-c:a", "aac",
+        "-b:a", "96k",
+        "-movflags", "+faststart",
+        str(output_path)
+    ]
+
+    print(f"[instagram] Compressing video (target ~30MB)...")
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+
+    if result.returncode != 0 or not output_path.exists():
+        print(f"[instagram] Compression failed: {result.stderr[:500]}")
+        print(f"[instagram] Falling back to original video")
+        return str(video_path)
+
+    compressed_size_mb = output_path.stat().st_size / (1024 * 1024)
+    ratio = (1 - compressed_size_mb / original_size_mb) * 100
+    print(f"[instagram] Compressed: {original_size_mb:.1f}MB → {compressed_size_mb:.1f}MB ({ratio:.0f}% reduction)")
+    return str(output_path)
+
+
+def cleanup_compressed(file_path):
+    """Remove compressed temp file."""
+    try:
+        p = Path(file_path)
+        if p.parent == TEMP_COMPRESS_DIR and p.exists():
+            p.unlink()
+    except Exception:
+        pass
 
 
 def upload_to_tempfile(file_path):
@@ -165,9 +217,12 @@ def upload_to_instagram(video_path, caption, is_story=False):
     caption_limited = caption[:2200] if len(caption) > 2200 else caption
     print(f"[instagram] Caption length: {len(caption_limited)} characters")
 
+    compressed = compress_for_instagram(video_path)
+    upload_path = compressed
+
     try:
         print("[instagram] Step 1: Uploading to temporary hosting...")
-        video_url = upload_to_temporary_host(video_path)
+        video_url = upload_to_temporary_host(upload_path)
         print(f"[instagram] Temporary URL created: {video_url}")
 
         print(f"[instagram] Step 2: Creating Instagram {media_type} container...")
@@ -299,6 +354,9 @@ def upload_to_instagram(video_path, caption, is_story=False):
         print(f"[instagram] {str(e)}")
         print("=" * 60)
         raise
+
+    finally:
+        cleanup_compressed(upload_path)
 
 
 if __name__ == '__main__':
