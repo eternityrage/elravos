@@ -1,12 +1,11 @@
 """
-Instagram Reels Upload - Using Google Drive for Public URL
-Uploads video to Google Drive, makes it public, then uses URL for Instagram API
+Instagram Reels Upload - Using catbox.moe for Public URL
+Uploads video to catbox.moe, then uses URL for Instagram API
 """
 
 import os
 import requests
 import time
-import tempfile
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -14,81 +13,22 @@ env_path = Path(__file__).parent.parent / '.env'
 load_dotenv(dotenv_path=env_path, override=True)
 
 
-def get_drive_service():
-    """Initialize and return Google Drive API client with write access."""
-    from google.oauth2 import service_account
-    from googleapiclient.discovery import build
-
-    SCOPES = ['https://www.googleapis.com/auth/drive.file']
-    GOOGLE_SERVICE_ACCOUNT_KEY = os.getenv("GOOGLE_SERVICE_ACCOUNT_KEY")
-
-    if not GOOGLE_SERVICE_ACCOUNT_KEY:
-        raise ValueError("GOOGLE_SERVICE_ACCOUNT_KEY not set")
-
-    if os.path.exists(GOOGLE_SERVICE_ACCOUNT_KEY):
-        creds = service_account.Credentials.from_service_account_file(
-            GOOGLE_SERVICE_ACCOUNT_KEY, scopes=SCOPES)
-        return build('drive', 'v3', credentials=creds)
-    elif GOOGLE_SERVICE_ACCOUNT_KEY.strip().startswith('{'):
-        temp_file = tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False)
-        temp_file.write(GOOGLE_SERVICE_ACCOUNT_KEY)
-        temp_file.close()
-        creds = service_account.Credentials.from_service_account_file(
-            temp_file.name, scopes=SCOPES)
-        service = build('drive', 'v3', credentials=creds)
-        os.unlink(temp_file.name)
-        return service
-    else:
-        raise ValueError("Google Service Account key is invalid")
-
-
-def upload_video_to_drive(service, file_path, folder_id):
-    """Upload video to Google Drive and return public direct download URL."""
-    from googleapiclient.http import MediaFileUpload
-
-    file_name = f"temp_ig_upload_{int(time.time())}.mp4"
-    file_metadata = {'name': file_name, 'parents': [folder_id]}
-    media = MediaFileUpload(file_path, mimetype='video/mp4', resumable=True)
-
-    file = service.files().create(
-        body=file_metadata, media_body=media, fields='id'
-    ).execute()
-    file_id = file.get('id')
-    print(f"[instagram] Uploaded to Google Drive (file_id: {file_id})")
-
-    permission = {'type': 'anyone', 'role': 'reader'}
-    service.permissions().create(fileId=file_id, body=permission).execute()
-    print(f"[instagram] Made file publicly accessible")
-
-    direct_url = f"https://drive.google.com/uc?export=download&id={file_id}"
-    return file_id, direct_url
-
-
-def delete_drive_file(service, file_id):
-    """Clean up temporary file from Google Drive."""
-    try:
-        service.files().delete(fileId=file_id).execute()
-        print(f"[instagram] Cleaned up temporary file {file_id} from Google Drive")
-    except Exception as e:
-        print(f"[instagram] Could not delete temporary file: {e}")
-
-
-def cleanup_stale_temp_files(service, folder_id):
-    """Remove any leftover temp files from previous aborted runs."""
-    try:
-        query = f"'{folder_id}' in parents and name contains 'temp_ig_upload_' and trashed=false"
-        results = service.files().list(q=query, fields="files(id, name)").execute()
-        stale = results.get('files', [])
-        for f in stale:
-            try:
-                service.files().delete(fileId=f['id']).execute()
-                print(f"[instagram] Cleaned stale temp file: {f['name']} ({f['id']})")
-            except Exception:
-                pass
-        if stale:
-            print(f"[instagram] Cleaned {len(stale)} stale temp file(s) from previous runs")
-    except Exception as e:
-        print(f"[instagram] Could not scan for stale temp files: {e}")
+def upload_to_catbox(file_path):
+    """Upload a file to catbox.moe and return the direct URL."""
+    url = "https://catbox.moe/user/api.php"
+    with open(file_path, 'rb') as f:
+        resp = requests.post(
+            url,
+            data={'reqtype': 'fileupload'},
+            files={'fileToUpload': ('video.mp4', f, 'video/mp4')},
+            timeout=300
+        )
+    if resp.status_code != 200:
+        raise Exception(f"catbox.moe upload failed: {resp.status_code} {resp.text}")
+    direct_url = resp.text.strip()
+    if not direct_url.startswith('https://'):
+        raise Exception(f"catbox.moe returned invalid URL: {direct_url}")
+    return direct_url
 
 
 def upload_to_instagram(video_path, caption, is_story=False):
@@ -100,7 +40,6 @@ def upload_to_instagram(video_path, caption, is_story=False):
 
     access_token = os.getenv('INSTAGRAM_ACCESS_TOKEN') or os.getenv('FACEBOOK_ACCESS_TOKEN')
     user_id = os.getenv('INSTAGRAM_ACCOUNT_ID') or os.getenv('IG_USER_ID')
-    folder_id = os.getenv('GOOGLE_DRIVE_FOLDER_ID')
 
     def mask(s):
         return f"{s[:10]}...{s[-4:]}" if s and len(s) > 10 else ("PLACEHOLDER" if s == "***" else "MISSING")
@@ -151,20 +90,10 @@ def upload_to_instagram(video_path, caption, is_story=False):
     caption_limited = caption[:2200] if len(caption) > 2200 else caption
     print(f"[instagram] Caption length: {len(caption_limited)} characters")
 
-    drive_service = None
-    drive_file_id = None
-
     try:
-        print(f"[instagram] Step 1: Uploading to Google Drive for temporary hosting...")
-
-        if not folder_id:
-            raise ValueError("GOOGLE_DRIVE_FOLDER_ID not set in .env")
-
-        drive_service = get_drive_service()
-        cleanup_stale_temp_files(drive_service, folder_id)
-        drive_file_id, video_url = upload_video_to_drive(drive_service, video_path, folder_id)
-
-        print(f"[instagram] Public URL created: {video_url}")
+        print("[instagram] Step 1: Uploading to catbox.moe for temporary hosting...")
+        video_url = upload_to_catbox(video_path)
+        print(f"[instagram] Temporary URL created: {video_url}")
 
         print(f"[instagram] Step 2: Creating Instagram {media_type} container...")
 
@@ -201,7 +130,7 @@ def upload_to_instagram(video_path, caption, is_story=False):
         print(f"[instagram] Container created: {container_id}")
 
         print("[instagram] Step 3: Waiting for video processing...")
-        max_wait = 300
+        max_wait = 600
         waited = 0
 
         while waited < max_wait:
@@ -230,8 +159,8 @@ def upload_to_instagram(video_path, caption, is_story=False):
                 print(f"[instagram] {error_msg}")
                 raise Exception(error_msg)
 
-            time.sleep(10)
-            waited += 10
+            time.sleep(15)
+            waited += 15
 
         if waited >= max_wait:
             error_msg = "Video processing timed out"
@@ -287,10 +216,6 @@ def upload_to_instagram(video_path, caption, is_story=False):
         print(f"[instagram] {str(e)}")
         print("=" * 60)
         raise
-
-    finally:
-        if drive_service is not None and drive_file_id is not None:
-            delete_drive_file(drive_service, drive_file_id)
 
 
 if __name__ == '__main__':
