@@ -13,20 +13,7 @@ env_path = Path(__file__).parent.parent / '.env'
 load_dotenv(dotenv_path=env_path, override=True)
 
 
-def upload_to_0x0(file_path):
-    """Upload a file to 0x0.st and return the direct URL."""
-    with open(file_path, 'rb') as f:
-        resp = requests.post(
-            'https://0x0.st',
-            files={'file': ('video.mp4', f, 'video/mp4')},
-            timeout=300
-        )
-    if resp.status_code != 200:
-        raise Exception(f"0x0.st upload failed: {resp.status_code} {resp.text[:200]}")
-    url = resp.text.strip()
-    if not url.startswith('https://'):
-        raise Exception(f"0x0.st returned invalid URL: {url}")
-    return url
+REQ_TIMEOUT = (15, 120)
 
 
 def upload_to_tempfile(file_path):
@@ -35,7 +22,7 @@ def upload_to_tempfile(file_path):
         resp = requests.post(
             'https://tmpfiles.org/api/v1/upload',
             files={'file': ('video.mp4', f, 'video/mp4')},
-            timeout=300
+            timeout=REQ_TIMEOUT
         )
     if resp.status_code != 200:
         raise Exception(f"tmpfiles.org upload failed: {resp.status_code}")
@@ -46,6 +33,22 @@ def upload_to_tempfile(file_path):
     return temp_url.replace('tmpfiles.org/', 'tmpfiles.org/dl/')
 
 
+def upload_to_0x0(file_path):
+    """Upload a file to 0x0.st and return the direct URL."""
+    with open(file_path, 'rb') as f:
+        resp = requests.post(
+            'https://0x0.st',
+            files={'file': ('video.mp4', f, 'video/mp4')},
+            timeout=REQ_TIMEOUT
+        )
+    if resp.status_code != 200:
+        raise Exception(f"0x0.st upload failed: {resp.status_code} {resp.text[:200]}")
+    url = resp.text.strip()
+    if not url.startswith('https://'):
+        raise Exception(f"0x0.st returned invalid URL: {url}")
+    return url
+
+
 def upload_to_catbox(file_path):
     """Upload a file to catbox.moe and return the direct URL."""
     with open(file_path, 'rb') as f:
@@ -53,7 +56,7 @@ def upload_to_catbox(file_path):
             'https://catbox.moe/user/api.php',
             data={'reqtype': 'fileupload'},
             files={'fileToUpload': ('video.mp4', f, 'video/mp4')},
-            timeout=300
+            timeout=REQ_TIMEOUT
         )
     if resp.status_code != 200:
         raise Exception(f"catbox.moe upload failed: {resp.status_code} {resp.text[:200]}")
@@ -69,7 +72,7 @@ def upload_to_uguu(file_path):
         resp = requests.post(
             'https://uguu.se/upload',
             files={'files[]': ('video.mp4', f, 'video/mp4')},
-            timeout=300
+            timeout=REQ_TIMEOUT
         )
     if resp.status_code != 200:
         raise Exception(f"uguu.se upload failed: {resp.status_code} {resp.text[:200]}")
@@ -80,8 +83,8 @@ def upload_to_uguu(file_path):
 
 
 HOSTING_SERVICES = [
-    ("0x0.st", upload_to_0x0),
     ("tmpfiles.org", upload_to_tempfile),
+    ("0x0.st", upload_to_0x0),
     ("catbox.moe", upload_to_catbox),
     ("uguu.se", upload_to_uguu),
 ]
@@ -204,6 +207,7 @@ def upload_to_instagram(video_path, caption, is_story=False):
         print("[instagram] Step 3: Waiting for video processing...")
         max_wait = 600
         waited = 0
+        poll_interval = 20
 
         while waited < max_wait:
             status_url = f"https://graph.facebook.com/v21.0/{container_id}"
@@ -212,13 +216,19 @@ def upload_to_instagram(video_path, caption, is_story=False):
                 'access_token': access_token
             }
 
-            status_response = requests.get(status_url, params=status_params, timeout=30)
+            try:
+                status_response = requests.get(status_url, params=status_params, timeout=(10, 20))
+            except Exception:
+                status_response = None
 
-            if status_response.status_code != 200:
-                status_url = f"https://graph.instagram.com/v21.0/{container_id}"
-                status_response = requests.get(status_url, params=status_params, timeout=30)
+            if not status_response or status_response.status_code != 200:
+                try:
+                    status_url = f"https://graph.instagram.com/v21.0/{container_id}"
+                    status_response = requests.get(status_url, params=status_params, timeout=(10, 20))
+                except Exception:
+                    pass
 
-            status_data = status_response.json()
+            status_data = status_response.json() if status_response else {}
             status_code = status_data.get('status_code', 'UNKNOWN')
 
             print(f"[instagram] Status: {status_code} (waited {waited}s)")
@@ -230,14 +240,15 @@ def upload_to_instagram(video_path, caption, is_story=False):
                 error_msg = status_data.get('error_message', 'Video processing failed')
                 print(f"[instagram] {error_msg}")
                 raise Exception(error_msg)
+            elif status_code == 'UNKNOWN' and waited >= 540:
+                print("[instagram] Still UNKNOWN after 9min, publishing anyway...")
+                break
 
-            time.sleep(15)
-            waited += 15
+            time.sleep(poll_interval)
+            waited += poll_interval
 
         if waited >= max_wait:
-            error_msg = "Video processing timed out"
-            print(f"[instagram] {error_msg}")
-            raise Exception(error_msg)
+            print("[instagram] Max wait reached, attempting to publish anyway...")
 
         print("[instagram] Step 4: Publishing to Instagram... (Adding 5s buffer)")
         time.sleep(5)
