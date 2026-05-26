@@ -1,234 +1,409 @@
+import os
+import requests
+import time
+from pathlib import Path
+from dotenv import load_dotenv
+
+env_path = Path(__file__).parent.parent / '.env'
+load_dotenv(dotenv_path=env_path, override=True)
+
+
 def upload_to_instagram(video_path, caption, is_story=False):
-    media_type = 'STORIES' if is_story else 'REELS'
-    BASE_URL = "https://graph.facebook.com/v21.0"
+
+    media_type = "STORIES" if is_story else "REELS"
 
     print("\n" + "="*60)
-    print(f"INSTAGRAM {media_type} UPLOAD STARTING")
+    print(f"INSTAGRAM {media_type} UPLOAD")
     print("="*60)
 
-    access_token = os.getenv('INSTAGRAM_ACCESS_TOKEN') or os.getenv('FACEBOOK_ACCESS_TOKEN')
-    user_id = os.getenv('INSTAGRAM_ACCOUNT_ID') or os.getenv('IG_USER_ID')
+    access_token = (
+        os.getenv("INSTAGRAM_ACCESS_TOKEN")
+        or
+        os.getenv("FACEBOOK_ACCESS_TOKEN")
+    )
+
+    user_id = (
+        os.getenv("INSTAGRAM_ACCOUNT_ID")
+        or
+        os.getenv("IG_USER_ID")
+    )
+
 
     if not access_token:
-        raise Exception("Missing access token")
+        raise Exception(
+            "Missing access token"
+        )
 
     if not user_id:
-        raise Exception("Missing Instagram account ID")
-
-    compressed = compress_for_instagram(video_path)
-    upload_path = compressed
-
-    try:
-        # ---------------------------------------
-        # STEP 1: Upload to temp host
-        # ---------------------------------------
-
-        print("[instagram] Uploading to temporary host...")
-        video_url = upload_to_temporary_host(upload_path)
-
-        print(f"[instagram] Video URL:")
-        print(video_url)
-
-        # ---------------------------------------
-        # STEP 2: Create container
-        # ---------------------------------------
-
-        container_url = f"{BASE_URL}/{user_id}/media"
-
-        params = {
-            "media_type": media_type,
-            "video_url": video_url,
-            "access_token": access_token
-        }
-
-        if not is_story:
-            params["caption"] = caption[:2200]
-            params["share_to_feed"] = "false"
-            params["thumb_offset"] = "5000"
-
-        response = requests.post(
-            container_url,
-            params=params,
-            timeout=120
+        raise Exception(
+            "Missing user id"
         )
 
-        print("\nCREATE RESPONSE:")
-        print(response.text)
 
-        if response.status_code != 200:
-            raise Exception(response.text)
+    video = Path(video_path)
 
-        container_id = response.json()["id"]
-
-        print(f"""
-Container created:
-{container_id}
-        """)
-
-        # ---------------------------------------
-        # STEP 3: Poll status
-        # ---------------------------------------
-
-        max_wait = 900
-        poll_interval = 60
-        waited = 0
-
-        processing_done = False
-
-        while waited < max_wait:
-
-            status_url = f"{BASE_URL}/{container_id}"
-
-            status = requests.get(
-                status_url,
-                params={
-                    "fields":
-                    "status_code,status",
-                    "access_token":
-                    access_token
-                },
-                timeout=60
-            )
-
-            raw = status.json()
-
-            print("\n====================")
-            print("RAW STATUS:")
-            print(raw)
-            print("====================")
-
-            status_code = (
-                raw.get("status_code")
-                or raw.get("status")
-                or "UNKNOWN"
-            )
-
-            print(
-                f"[instagram] "
-                f"Status={status_code} "
-                f"waited={waited}s"
-            )
-
-            if status_code == "FINISHED":
-
-                print(
-                    "[instagram] "
-                    "Processing complete"
-                )
-
-                processing_done = True
-                break
-
-
-            elif status_code == "ERROR":
-
-                raise Exception(
-                    f"Processing failed:\n{raw}"
-                )
-
-
-            elif waited >= 300 and status_code == "UNKNOWN":
-
-                print(
-                    "[instagram] "
-                    "UNKNOWN >5min "
-                    "Proceeding anyway..."
-                )
-
-                break
-
-
-            time.sleep(
-                poll_interval
-            )
-
-            waited += poll_interval
-
-
-        # ---------------------------------------
-        # STEP 4: Publish
-        # ---------------------------------------
-
-        print(
-            "\nPublishing..."
+    if not video.exists():
+        raise Exception(
+            f"Missing file {video_path}"
         )
 
-        time.sleep(5)
 
-        publish_url = (
-            f"{BASE_URL}/"
-            f"{user_id}/media_publish"
+    print(
+        f"Video size:"
+        f"{video.stat().st_size/1024/1024:.1f}MB"
+    )
+
+
+    caption = caption[:2200]
+
+
+    # -------------------------
+    # upload tmpfiles
+    # -------------------------
+
+    print(
+        "[instagram] "
+        "Uploading temp..."
+    )
+
+    with open(
+        video,
+        "rb"
+    ) as f:
+
+        tmp = requests.post(
+
+            "https://tmpfiles.org/api/v1/upload",
+
+            files={
+                "file":
+                (
+                    "video.mp4",
+                    f,
+                    "video/mp4"
+                )
+            },
+
+            timeout=180
         )
 
-        publish = requests.post(
-            publish_url,
+
+    print(
+        "TMP RESPONSE:"
+    )
+
+    print(
+        tmp.text
+    )
+
+
+    if tmp.status_code != 200:
+
+        raise Exception(
+            tmp.text
+        )
+
+
+    temp_url = (
+        tmp.json()
+        ["data"]
+        ["url"]
+    )
+
+
+    video_url = temp_url.replace(
+
+        "tmpfiles.org/",
+
+        "tmpfiles.org/dl/"
+    )
+
+
+    print(
+        video_url
+    )
+
+
+    # -------------------------
+    # create container
+    # -------------------------
+
+    container = requests.post(
+
+        f"https://graph.facebook.com/v21.0/{user_id}/media",
+
+        params={
+
+            "media_type":
+            media_type,
+
+            "video_url":
+            video_url,
+
+            "caption":
+            caption,
+
+            "access_token":
+            access_token,
+
+            "share_to_feed":
+            "false"
+
+        },
+
+        timeout=120
+    )
+
+
+    print(
+        "CREATE:"
+    )
+
+    print(
+        container.text
+    )
+
+
+    if container.status_code != 200:
+
+        raise Exception(
+            container.text
+        )
+
+
+    container_id = (
+
+        container.json()
+
+        ["id"]
+
+    )
+
+
+    print(
+
+        f"Container:"
+        f"{container_id}"
+
+    )
+
+
+    # -------------------------
+    # wait
+    # -------------------------
+
+    waited = 0
+
+    max_wait = 900
+
+    poll = 60
+
+
+    while waited < max_wait:
+
+
+        status = requests.get(
+
+            f"https://graph.facebook.com/v21.0/{container_id}",
+
             params={
-                "creation_id":
-                container_id,
+
+                "fields":
+
+                "status_code,status",
 
                 "access_token":
+
                 access_token
+
             },
-            timeout=120
+
+            timeout=60
+        )
+
+
+        raw = status.json()
+
+
+        print(
+            "\nRAW:"
         )
 
         print(
-            "\nPUBLISH RESPONSE:"
+            raw
         )
 
+
+        code = (
+
+            raw.get(
+                "status_code"
+            )
+
+            or
+
+            raw.get(
+                "status"
+            )
+
+            or
+
+            "UNKNOWN"
+
+        )
+
+
         print(
+
+            f"STATUS="
+            f"{code}"
+
+            f" waited="
+            f"{waited}"
+
+        )
+
+
+        if code == "FINISHED":
+
+            print(
+                "DONE"
+            )
+
+            break
+
+
+        if code == "ERROR":
+
+            raise Exception(
+                raw
+            )
+
+
+        # important fix
+
+        if (
+            code=="UNKNOWN"
+
+            and
+
+            waited>=300
+        ):
+
+            print(
+
+                "UNKNOWN>5min"
+
+                " publish anyway"
+
+            )
+
+            break
+
+
+        time.sleep(
+            poll
+        )
+
+        waited += poll
+
+
+
+    # -------------------------
+    # publish
+    # -------------------------
+
+    print(
+        "Publishing..."
+    )
+
+
+    publish = requests.post(
+
+        f"https://graph.facebook.com/v21.0/{user_id}/media_publish",
+
+        params={
+
+            "creation_id":
+
+            container_id,
+
+            "access_token":
+
+            access_token
+
+        },
+
+        timeout=120
+    )
+
+
+    print(
+        publish.text
+    )
+
+
+    if publish.status_code != 200:
+
+        raise Exception(
             publish.text
         )
 
-        if publish.status_code != 200:
 
-            raise Exception(
-                publish.text
-            )
+    media = (
 
+        publish.json()
 
-        media_id = publish.json()["id"]
+        ["id"]
 
-        print(
-            "\nSUCCESS"
-        )
-
-        print(
-            f"Media ID:"
-            f"{media_id}"
-        )
-
-        return {
-
-            "status":
-            "success",
-
-            "platform":
-            "instagram",
-
-            "id":
-            media_id,
-
-            "processing_done":
-            processing_done
-        }
+    )
 
 
-    except Exception as e:
+    print(
 
-        print(
-            "\nERROR:"
-        )
+        "SUCCESS"
 
-        print(
-            str(e)
-        )
+    )
 
-        raise
+    print(
+
+        media
+
+    )
 
 
-    finally:
+    return {
 
-        cleanup_compressed(
-            upload_path
-        )
+        "status":
+
+        "success",
+
+        "id":
+
+        media
+
+    }
+
+
+
+if __name__ == "__main__":
+
+    video = Path(
+
+        "ielts_short.mp4"
+
+    )
+
+
+    result = upload_to_instagram(
+
+        str(video),
+
+        "test"
+
+    )
+
+
+    print(
+        result
+    )
