@@ -16,12 +16,12 @@ def compress(p):
     out.parent.mkdir(parents=True,exist_ok=True)
     sz_mb=path.stat().st_size/1048576
     if sz_mb<20: print(f"[ig] No compression ({sz_mb:.0f}MB)"); return str(path)
-    for crf in [23, 26, 28, 30]:
+    for crf in [23, 26, 28, 30, 32]:
         print(f"[ig] Compressing {sz_mb:.0f}MB -> CRF{crf}...")
         subprocess.run(['ffmpeg','-i',str(path),'-c:v','libx264','-preset','medium','-crf',str(crf),'-vf','scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2','-c:a','aac','-b:a','128k','-movflags','+faststart','-y',str(out)],capture_output=True,text=True,timeout=300)
         ns=out.stat().st_size/1048576; b64=ns*1.37
         print(f"[ig] CRF{crf}: {ns:.0f}MB (b64 ~{b64:.0f}MB)")
-        if b64<50: return str(out)
+        if b64<25: return str(out)
     return str(out)
 
 def upload_git(cp,repo,token):
